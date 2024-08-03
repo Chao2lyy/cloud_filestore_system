@@ -10,7 +10,7 @@ import (
 
 var db *sql.DB
 
-func init() {
+func Setup() {
 	//fmt.Println("testtest")
 	db, _ = sql.Open("mysql", "root:123456@tcp(127.0.0.1:3208)/fileserver?charset=utf8")
 

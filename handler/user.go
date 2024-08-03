@@ -1,72 +1,86 @@
 package handler
 
 import (
+	"filestore-server/config"
 	dblayer "filestore-server/db"
 	"filestore-server/util"
 	"fmt"
+	"log"
 	"net/http"
-	"os"
 	"time"
+
+	"github.com/gin-gonic/gin"
 )
 
-const (
-	pwd_salt = "#890"
-)
+// SignupHandler: 处理用户注册请求
+func SignupHandler(c *gin.Context) {
+	c.Redirect(http.StatusFound, "http://"+c.Request.Host+"/static/view/signup.html")
+}
 
-func SignupHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodGet {
-		data, err := os.ReadFile("./static/view/signup.html")
-		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-		w.Write(data)
-		return
-	}
-	r.ParseForm()
-
-	username := r.Form.Get("username")
-	passwd := r.Form.Get("password")
+func DoSignupHandler(c *gin.Context) {
+	//解析校验参数的有效性
+	username := c.Request.FormValue("username")
+	passwd := c.Request.FormValue("password")
 
 	if len(username) < 3 || len(passwd) < 5 {
-		w.Write([]byte("invalid parameter"))
+		c.JSON(http.StatusOK, util.RespMsg{
+			Code: -1,
+			Msg:  "Invalid parameter: 用户名或密码不符合规范",
+		})
 		return
 	}
+
 	//3.用户密码加盐处理
-	encPasswd := util.Sha1([]byte(pwd_salt + passwd))
+	encPasswd := util.Sha1([]byte(config.PwdSalt + passwd))
 	//4.存入数据库 tbl_user 表并返回结果
 	isSuccess := dblayer.UserSignUp(username, encPasswd)
 
 	if isSuccess {
-		w.Write([]byte("SUCCESS"))
+		c.JSON(http.StatusOK, util.RespMsg{
+			Code: 0,
+			Msg:  "注册成功",
+			Data: "/static/view/signin.html",
+		})
 	} else {
-		w.Write([]byte("FAILED"))
+		c.JSON(http.StatusOK, util.RespMsg{
+			Code: -1,
+			Msg:  "注册失败",
+		})
 	}
 }
 
-// login
-func SignInHandler(w http.ResponseWriter, r *http.Request) {
-	r.ParseForm()
+// SignInHandler: 登录接口
+func SignInHandler(c *gin.Context) {
+	c.Redirect(http.StatusFound, "http://"+c.Request.Host+"/static/view/signin.html")
+}
 
-	username := r.Form.Get("username")
-	passwd := r.Form.Get("password")
-	//3.用户密码加盐处理
-	encPasswd := util.Sha1([]byte(pwd_salt + passwd))
+func DoSignInHandler(c *gin.Context) {
+	username := c.Request.FormValue("username")
+	passwd := c.Request.FormValue("password")
+	encPasswd := util.Sha1([]byte(config.PwdSalt + passwd))
 
-	//校验
+	//1.校验用户名及密码
 	pwdChecked := dblayer.UserSignIn(username, encPasswd)
 	if !pwdChecked {
-		w.Write([]byte("Failed"))
+		c.JSON(http.StatusOK, util.RespMsg{
+			Code: -1,
+			Msg:  "Failed 用户名或密码错误",
+		})
 		return
 	}
-	//生成token
+
+	//2.生成访问凭证（一般两种方式：① token   ② cookies/session浏览器端比较常见）这里选择第一种
 	token := GenToken(username)
 	upRes := dblayer.UpdateToken(username, token)
 	if !upRes {
-		w.Write([]byte("FAILED"))
+		c.JSON(http.StatusInternalServerError, util.RespMsg{
+			Code: -2,
+			Msg:  "update token failed",
+		})
 		return
 	}
-	//重定向
+
+	//3.登录成功后重定向到首页 并组装返回 username,token 重定向url等信息
 	//w.Write([]byte("http://" + r.Host + "/static/view/home.html"))
 	resp := util.RespMsg{
 		Code: 0,
@@ -76,39 +90,36 @@ func SignInHandler(w http.ResponseWriter, r *http.Request) {
 			Username string
 			Token    string
 		}{
-			"http://" + r.Host + "/static/view/home.html",
+			"http://" + c.Request.Host + "/static/view/home.html",
 			username,
 			token,
 		},
 	}
-	w.Write(resp.JsonToBytes())
+
+	//log.Println(resp.Data)
+	c.JSON(http.StatusOK, resp)
 }
 
 // UserInfoHandler: 查询用户信息
-func UserInfoHandler(w http.ResponseWriter, r *http.Request) {
-	r.ParseForm()
+func UserInfoHandler(c *gin.Context) {
+	username := c.Request.FormValue("username")
 
-	username := r.Form.Get("username")
-	//token := r.Form.Get("token")
-
-	// isValidToken := IsTokenValid(token)
-	// if !isValidToken {
-	// 	w.WriteHeader(http.StatusForbidden)
-	// 	return
-	// }
-
-	user, err := dblayer.GetUserInfo(username)
-	if err != nil {
-		w.WriteHeader(http.StatusForbidden)
+	// 3. 查询用户信息
+	user, e := dblayer.GetUserInfo(username)
+	if e != nil {
+		log.Println(e.Error())
+		c.JSON(http.StatusForbidden,
+			gin.H{})
 		return
 	}
+
 	// 4. 组装并且响应用户数据
 	resp := util.RespMsg{
 		Code: 0,
 		Msg:  "OK",
 		Data: user,
 	}
-	w.Write(resp.JsonToBytes())
+	c.Data(http.StatusOK, "octet-stream", resp.JsonToBytes())
 }
 
 // GenToken: 生成用户 token
@@ -116,7 +127,7 @@ func GenToken(username string) string {
 	//token(40位字符 mde5 后得到的32位字符再加上截取时间戳前8位）生成规则：md5(username+timestamp+tokenSalt)+timestamp[:8]
 
 	ts := fmt.Sprintf("%x", time.Now().In(util.CstZone).Unix())
-	tokenPrefix := util.MD5([]byte(username + ts + "_tokensalt"))
+	tokenPrefix := util.MD5([]byte(username + ts + config.TokenSalt))
 	return tokenPrefix + ts[:8]
 }
 
